@@ -5,6 +5,9 @@ use serde::de::{self, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess, V
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::Gender;
+#[cfg(feature = "alloc")]
+use crate::HeaderParts;
 
 pub struct Deserializer<'de> {
     // This string starts with the input data and characters are truncated off
@@ -565,15 +568,6 @@ fn test_map() {
     );
 }
 
-#[derive(Deserialize, Debug, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Gender {
-    Male,
-    Female,
-    #[default]
-    Unknown,
-}
-
 #[cfg(feature = "alloc")]
 #[test]
 fn test_struct() {
@@ -666,23 +660,6 @@ fn test_u128() {
 fn test_file() {
     use chrono::NaiveDateTime;
     let data = include_bytes!("../data/cmu_us_slt.flitevox");
-    #[derive(Deserialize, Debug, PartialEq)]
-    struct HeaderParts {
-        language: String,
-        country: String,
-        variant: String,
-        age: u32,
-        gender: Gender,
-        #[serde(with = "crate::date")]
-        build_date: chrono::NaiveDateTime,
-        description: String,
-        eng_shared: u32,
-        copyright: String,
-        num_dur_models: u32,
-        num_param_models: u32,
-        model_shape: u32,
-        num_f0_models: u32,
-    }
     let expected = HeaderParts {
         language: "eng".to_string(),
         country: "USA".to_string(),
