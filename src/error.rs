@@ -13,6 +13,7 @@ pub enum Error {
     NotUtf8(Utf8Error),
     ParseInt(ParseIntError),
     WrongLength(usize),
+    FieldNotFound(&'static str),
     TrailingBytes
 }
 impl From<Utf8Error> for Error {
