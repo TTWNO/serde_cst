@@ -1,5 +1,5 @@
-use chrono::{DateTime, Utc, NaiveDateTime};
-use serde::{self, Deserialize, Serializer, Deserializer};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use serde::{self, Deserialize, Deserializer, Serializer};
 
 const FORMAT: &'static str = "%Y-%m-%d_%H:%M";
 
@@ -10,10 +10,7 @@ const FORMAT: &'static str = "%Y-%m-%d_%H:%M";
 //        S: Serializer
 //
 // although it may also be generic over the input types T.
-pub fn serialize<S>(
-    date: &NaiveDateTime,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+pub fn serialize<S>(date: &NaiveDateTime, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -28,9 +25,7 @@ where
 //        D: Deserializer<'de>
 //
 // although it may also be generic over the output types T.
-pub fn deserialize<'de, D>(
-    deserializer: D,
-) -> Result<NaiveDateTime, D::Error>
+pub fn deserialize<'de, D>(deserializer: D) -> Result<NaiveDateTime, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -38,5 +33,3 @@ where
     let dt = NaiveDateTime::parse_from_str(&s, FORMAT).map_err(serde::de::Error::custom)?;
     Ok(dt)
 }
-
-

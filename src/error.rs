@@ -1,8 +1,8 @@
 use core::error;
+use core::fmt::{self, Display, Formatter};
 use core::num::ParseIntError;
-use core::fmt::{Formatter, self, Display};
-use core::str::Utf8Error;
 use core::result;
+use core::str::Utf8Error;
 
 #[derive(Debug)]
 pub enum Error {
@@ -14,7 +14,7 @@ pub enum Error {
     ParseInt(ParseIntError),
     WrongLength(usize),
     FieldNotFound(&'static str),
-    TrailingBytes
+    TrailingBytes,
 }
 impl From<Utf8Error> for Error {
     fn from(utf8e: Utf8Error) -> Error {
@@ -32,7 +32,7 @@ impl Display for Error {
     }
 }
 impl error::Error for Error {}
-impl serde::de::Error  for Error {
+impl serde::de::Error for Error {
     fn custom<T>(msg: T) -> Self {
         todo!()
     }
