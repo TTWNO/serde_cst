@@ -17,6 +17,9 @@ pub struct Deserializer<'de> {
 }
 
 impl<'de> Deserializer<'de> {
+    pub fn from_str(input: &'de str) -> Self {
+        Self::from_bytes(input.as_bytes())
+    }
     // By convention, `Deserializer` constructors are named like `from_xyz`.
     // That way basic use cases are satisfied by something like
     // `serde_json::from_str(...)` while advanced use cases that require a
@@ -27,6 +30,7 @@ impl<'de> Deserializer<'de> {
 }
 
 const CST_FLITE_HEADER: &str = "CMU_FLITE_CG_VOXDATA-v2.0";
+const CST_LITTLE_ENDIAN_BYTE_VALUE: usize = 1;
 
 // SERDE IS NOT A PARSING LIBRARY. This impl block defines a few basic parsing
 // functions from scratch. More complicated formats may wish to use a dedicated
@@ -40,7 +44,7 @@ impl<'de> Deserializer<'de> {
             return Err(Error::InvalidHeader);
         }
         self.input = &self.input[CST_FLITE_HEADER.as_bytes().len()+1..];
-        self.byteswapped = Some(self.parse_bool_unchecked_header()?);
+        self.byteswapped = Some(self.get_size_of_next()? != CST_LITTLE_ENDIAN_BYTE_VALUE);
         Ok(())
     }
     fn get_size_of_next(&mut self) -> Result<usize> {
@@ -56,7 +60,6 @@ impl<'de> Deserializer<'de> {
     }
     fn parse_bool_unchecked_header(&mut self) -> Result<bool> {
         let required_size = 1;
-        println!("BUF: {:?}", self.input);
         let size = self.get_size_of_next()?;
         if size != required_size {
             return Err(Error::ExpectedSize(size, 1));
@@ -73,7 +76,6 @@ impl<'de> Deserializer<'de> {
     }
     fn parse_str(&mut self) -> Result<&'de str> {
         self.validate_header()?;
-        println!("BUF: {:?}", self.input);
         let size = self.get_size_of_next()?;
         let bytes = &self.input.get(0..size).ok_or(Error::Eof)?;
         if bytes[size-1] != 0 {
@@ -81,10 +83,22 @@ impl<'de> Deserializer<'de> {
         }
         let s = core::str::from_utf8(&bytes[..size-1])?;
         self.input = &self.input[size..];
-        println!("\tAFTER: {:?}", self.input);
         Ok(s)
     }
+    fn parse_digits(&mut self) -> Result<Vec<u8>> {
+        let digit_chars: [u8; 10] = [b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9'];
+        let digits: Vec<u8> = self.input.iter().take_while(|c| digit_chars.contains(c)).copied().collect();
+        self.input = &self.input[digits.len()..];
+        Ok(digits)
+    }
     fn parse_unsigned<T>(&mut self) -> Result<T>
+    where T: AddAssign<T> + MulAssign<T> + From<u8> + FromStr,
+        Error: From<<T as FromStr>::Err>
+    {
+        let ascii = self.parse_str()?;
+        Ok(T::from_str(ascii)?)
+    }
+    fn parse_signed<T>(&mut self) -> Result<T>
     where T: AddAssign<T> + MulAssign<T> + From<u8> + FromStr,
         Error: From<<T as FromStr>::Err>
     {
@@ -104,9 +118,11 @@ where
 {
     let mut deserializer = Deserializer::from_bytes(s);
     let t = T::deserialize(&mut deserializer)?;
+    /*
     if !deserializer.input.is_empty() {
        return Err(Error::TrailingBytes);
     }
+    */
     Ok(t)
 }
 
@@ -271,8 +287,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        todo!("i32")
-        //visitor.visit_i32(self.parse_signed()?)
+        visitor.visit_i32(self.parse_signed()?)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
@@ -537,7 +552,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 fn test_vec() {
     extern crate alloc;
     use alloc::{vec, vec::Vec};
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x02\0\0\02\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x02\0\0\02\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
     let expected: Vec<&str> = vec!["lang", "eng"];
     assert_eq!(expected, from_bytes::<Vec<&str>>(data.as_bytes()).unwrap());
 }
@@ -547,7 +562,7 @@ fn test_vec() {
 fn test_map() {
     extern crate alloc;
     use alloc::collections::BTreeMap;
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
     let mut expected: BTreeMap<&str, &str> = BTreeMap::new();
     expected.insert("lang", "eng");
     assert_eq!(expected, from_bytes::<BTreeMap<&str, &str>>(data.as_bytes()).unwrap());
@@ -573,7 +588,7 @@ fn test_struct() {
         age: u32,
         gender: Gender,
     }
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x09\0\0\0language\0\x04\0\0\0eng\0\x08\0\0\0country\0\x04\0\0\0USA\0\x08\0\0\0variant\0\x05\0\0\0none\0\x04\0\0\0age\0\x03\0\0\030\0\x07\0\0\0gender\0\x08\0\0\0unknown\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x09\0\0\0language\0\x04\0\0\0eng\0\x08\0\0\0country\0\x04\0\0\0USA\0\x08\0\0\0variant\0\x05\0\0\0none\0\x04\0\0\0age\0\x03\0\0\030\0\x07\0\0\0gender\0\x08\0\0\0unknown\0";
     let expected = HeaderParts {
         language: "eng".to_string(),
         country: "USA".to_string(),
@@ -586,57 +601,102 @@ fn test_struct() {
 
 #[test]
 fn test_tuple() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x01\0\0\0\x01\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x01\0\0\0\x01\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
     let expected = (true, "lang", "eng");
     assert_eq!(expected, from_bytes::<(bool, &str, &str)>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_bool() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x01\0\0\0\x09\0";
-    let data2 = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x01\0\0\0\x00\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x01\0\0\0\x09\0";
+    let data2 = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x01\0\0\0\x00\0";
     assert_eq!(true, from_bytes(data.as_bytes()).unwrap());
     assert_eq!(false, from_bytes(data2.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_str() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x09\0\0\0language\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x09\0\0\0language\0";
     let expected: &str = "language";
     assert_eq!(expected, from_bytes::<&str>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u8() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x04\0\0\0255\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x04\0\0\0255\0";
     let expected: u8 = 255;
     assert_eq!(expected, from_bytes::<u8>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u16() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x06\0\0\065535\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x06\0\0\065535\0";
     let expected = u16::MAX;
     assert_eq!(expected, from_bytes::<u16>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u32() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x0B\0\0\04294967295\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x0B\0\0\04294967295\0";
     let expected = u32::MAX;
     assert_eq!(expected, from_bytes::<u32>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u64() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x15\0\0\018446744073709551615\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x15\0\0\018446744073709551615\0";
     let expected = u64::MAX;
     assert_eq!(expected, from_bytes::<u64>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u128() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x28\0\0\0340282366920938463463374607431768211455\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x28\0\0\0340282366920938463463374607431768211455\0";
     let expected = u128::MAX;
     assert_eq!(expected, from_bytes::<u128>(data.as_bytes()).unwrap());
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn test_file() {
+    use time::PrimitiveDateTime;
+    time::serde::format_description!(cst_date_format, PrimitiveDateTime, "{year}-{month}-{day}_{hour}:{minute}");
+    let data = include_bytes!("../data/cmu_us_slt.flitevox");
+#[derive(Deserialize, Debug, PartialEq)]
+    struct HeaderParts {
+        language: String,
+        country: String,
+        variant: String,
+        age: u32,
+        gender: Gender,
+        build_date: String,
+        description: String,
+        eng_shared: u32,
+        copyright: String,
+        num_dur_models: u32,
+        num_param_models: u32,
+        model_shape: u32,
+        num_f0_models: u32,
+        //build_date: time::PrimitiveDateTime,
+    }
+    let expected = HeaderParts {
+        language: "eng".to_string(),
+        country: "USA".to_string(),
+        variant: "none".to_string(),
+        age: 30,
+        gender: Gender::Unknown,
+        build_date: "2017-09-14_23:37".to_string(),
+        description: "unknown".to_string(),
+        eng_shared: 0,
+        copyright: "unknown".to_string(),
+        num_dur_models: 3,
+        num_param_models: 3,
+        model_shape: 3,
+        num_f0_models: 3,
+        //build_date: time::PrimitiveDateTime::new(
+        //    time::Date::from_calendar_date(2017, time::Month::August, 14).unwrap(),
+        //    time::Time::from_hms(23, 37, 0).unwrap(),
+        //),
+    };
+    assert_eq!(expected, from_bytes::<HeaderParts>(data).unwrap());
 }
