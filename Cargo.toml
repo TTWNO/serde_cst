@@ -1,0 +1,12 @@
+[package]
+name = "serde_cst"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0.204", default-features = false, features = ["derive"] }
+
+[features]
+default = []
+alloc = ["serde/alloc"]
+std = []
