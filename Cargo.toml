@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+chrono = { version = "0.4.38", default-features = false, features = ["serde"] }
 serde = { version = "1.0.204", default-features = false, features = ["derive"] }
 serde_with = { version = "3.9.0", default-features = false }
-time = { version = "0.3.36", default-features = false, features = ["serde", "macros", "parsing"] }
 
 [features]
 default = []
-alloc = ["serde/alloc", "time/alloc", "serde_with/alloc"]
+alloc = ["serde/alloc", "chrono/alloc", "serde_with/alloc"]
 std = []

@@ -253,11 +253,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     // Deserialization refers to mapping that JSON value into Serde's data
     // model by invoking one of the `Visitor` methods. In the case of JSON and
     // bool that mapping is straightforward so the distinction may seem silly,
-    // but in other cases Deserializers sometimes perform non-obvious mappings.
-    // For example the TOML format has a Datetime type and Serde's data model
-    // does not. In the `toml` crate, a Datetime in the input is deserialized by
+    // but in other cases Deserializers somechronos perform non-obvious mappings.
+    // For example the TOML format has a Datechrono type and Serde's data model
+    // does not. In the `toml` crate, a Datechrono in the input is deserialized by
     // mapping it to a Serde data model "struct" type with a special name and a
-    // single field containing the Datetime represented as a string.
+    // single field containing the Datechrono represented as a string.
     fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -360,7 +360,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         todo!("char")
     }
 
-    // Refer to the "Understanding deserializer lifetimes" page for information
+    // Refer to the "Understanding deserializer lifechronos" page for information
     // about the three deserialization flavors of strings in Serde.
     fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
     where
@@ -492,7 +492,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     // Notice the `fields` parameter - a "struct" in the Serde data model means
     // that the `Deserialize` implementation is required to know what the fields
     // are before even looking at the input data. Any key-value pairing in which
-    // the fields cannot be known ahead of time is probably a map.
+    // the fields cannot be known ahead of chrono is probably a map.
     fn deserialize_struct<V>(
         self,
         _name: &'static str,
@@ -659,8 +659,7 @@ fn test_u128() {
 #[cfg(feature = "alloc")]
 #[test]
 fn test_file() {
-    use time::PrimitiveDateTime;
-    time::serde::format_description!(cst_date_format, PrimitiveDateTime, "{year}-{month}-{day}_{hour}:{minute}");
+    use chrono::NaiveDateTime;
     let data = include_bytes!("../data/cmu_us_slt.flitevox");
 #[derive(Deserialize, Debug, PartialEq)]
     struct HeaderParts {
@@ -669,7 +668,8 @@ fn test_file() {
         variant: String,
         age: u32,
         gender: Gender,
-        build_date: String,
+        #[serde(with = "crate::date")]
+        build_date: chrono::NaiveDateTime,
         description: String,
         eng_shared: u32,
         copyright: String,
@@ -677,7 +677,6 @@ fn test_file() {
         num_param_models: u32,
         model_shape: u32,
         num_f0_models: u32,
-        //build_date: time::PrimitiveDateTime,
     }
     let expected = HeaderParts {
         language: "eng".to_string(),
@@ -685,7 +684,10 @@ fn test_file() {
         variant: "none".to_string(),
         age: 30,
         gender: Gender::Unknown,
-        build_date: "2017-09-14_23:37".to_string(),
+        build_date: chrono::NaiveDateTime::new(
+            chrono::NaiveDate::from_ymd_opt(2017, 9, 14).unwrap(),
+            chrono::NaiveTime::from_hms_opt(23, 37, 0).unwrap(),
+        ),
         description: "unknown".to_string(),
         eng_shared: 0,
         copyright: "unknown".to_string(),
@@ -693,10 +695,6 @@ fn test_file() {
         num_param_models: 3,
         model_shape: 3,
         num_f0_models: 3,
-        //build_date: time::PrimitiveDateTime::new(
-        //    time::Date::from_calendar_date(2017, time::Month::August, 14).unwrap(),
-        //    time::Time::from_hms(23, 37, 0).unwrap(),
-        //),
     };
     assert_eq!(expected, from_bytes::<HeaderParts>(data).unwrap());
 }
