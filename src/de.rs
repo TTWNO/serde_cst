@@ -1,10 +1,10 @@
-use core::ops::{AddAssign, MulAssign, Neg};
+use core::ops::{AddAssign, MulAssign};
 use core::str::FromStr;
 
 use serde::Deserialize;
 use serde::de::{
-    self, DeserializeSeed, EnumAccess, IntoDeserializer, MapAccess, SeqAccess,
-    VariantAccess, Visitor,
+    self, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess,
+    Visitor,
 };
 
 use crate::error::{Error, Result};
@@ -13,7 +13,7 @@ pub struct Deserializer<'de> {
     // This string starts with the input data and characters are truncated off
     // the beginning as data is parsed.
     input: &'de [u8],
-    has_header: bool,
+    byteswapped: Option<bool>,
 }
 
 impl<'de> Deserializer<'de> {
@@ -22,29 +22,9 @@ impl<'de> Deserializer<'de> {
     // `serde_json::from_str(...)` while advanced use cases that require a
     // deserializer can make one with `serde_json::Deserializer::from_str(...)`.
     pub fn from_bytes(input: &'de [u8]) -> Self {
-        Deserializer { input, has_header: false }
+        Deserializer { input, byteswapped: None }
     }
 }
-
-// By convention, the public API of a Serde deserializer is one or more
-// `from_xyz` methods such as `from_str`, `from_bytes`, or `from_reader`
-// depending on what Rust types the deserializer is able to consume as input.
-//
-// This basic deserializer supports only `from_str`.
-/*
-pub fn from_str<'a, T>(s: &'a str) -> Result<T>
-where
-    T: Deserialize<'a>,
-{
-    let mut deserializer = Deserializer::from_str(s);
-    let t = T::deserialize(&mut deserializer)?;
-    if deserializer.input.is_empty() {
-        Ok(t)
-    } else {
-        Err(Error::TrailingCharacters)
-    }
-}
-*/
 
 const CST_FLITE_HEADER: &str = "CMU_FLITE_CG_VOXDATA-v2.0";
 
@@ -53,26 +33,15 @@ const CST_FLITE_HEADER: &str = "CMU_FLITE_CG_VOXDATA-v2.0";
 // parsing library to help implement their Serde deserializer.
 impl<'de> Deserializer<'de> {
     fn validate_header(&mut self) -> Result<()> {
-        if self.has_header {
+        if self.byteswapped.is_some() {
             return Ok(());
         }
         if !self.input.starts_with(CST_FLITE_HEADER.as_bytes()) {
             return Err(Error::InvalidHeader);
         }
-        self.has_header = true;
         self.input = &self.input[CST_FLITE_HEADER.as_bytes().len()+1..];
+        self.byteswapped = Some(self.parse_bool_unchecked_header()?);
         Ok(())
-    }
-    // Look at the first character in the input without consuming it.
-    fn peek_byte(&mut self) -> Result<u8> {
-        self.input.iter().next().ok_or(Error::Eof).copied()
-    }
-
-    // Consume the first character in the input.
-    fn next_byte(&mut self) -> Result<u8> {
-        let ch = self.peek_byte()?;
-        self.input = &self.input[1..];
-        Ok(ch)
     }
     fn get_size_of_next(&mut self) -> Result<usize> {
         let bytes = self.input.get(0..4).ok_or(Error::Eof)?;
@@ -85,9 +54,9 @@ impl<'de> Deserializer<'de> {
         self.input = &self.input[4..];
         Ok(result)
     }
-    fn parse_bool(&mut self) -> Result<bool> {
+    fn parse_bool_unchecked_header(&mut self) -> Result<bool> {
         let required_size = 1;
-        self.validate_header()?;
+        println!("BUF: {:?}", self.input);
         let size = self.get_size_of_next()?;
         if size != required_size {
             return Err(Error::ExpectedSize(size, 1));
@@ -97,6 +66,10 @@ impl<'de> Deserializer<'de> {
         // account for null byte: 2 instead of 1
         self.input = &self.input[2..];
         Ok(b)
+    }
+    fn parse_bool(&mut self) -> Result<bool> {
+        self.validate_header()?;
+        self.parse_bool_unchecked_header()
     }
     fn parse_str(&mut self) -> Result<&'de str> {
         self.validate_header()?;
@@ -137,97 +110,39 @@ where
     Ok(t)
 }
 
-struct Enum<'a, 'de: 'a> {
+struct StructValues<'a, 'de: 'a> {
     de: &'a mut Deserializer<'de>,
+    fields: &'static [&'static str],
+    idx: usize,
 }
-
-impl<'a, 'de> Enum<'a, 'de> {
-    fn new(de: &'a mut Deserializer<'de>) -> Self {
-        Enum { de }
-    }
-}
-
-// `EnumAccess` is provided to the `Visitor` to give it the ability to determine
-// which variant of the enum is supposed to be deserialized.
-//
-// Note that all enum deserialization methods in Serde refer exclusively to the
-// "externally tagged" enum representation.
-/*
-impl<'de, 'a> EnumAccess<'de> for Enum<'a, 'de> {
-    type Error = Error;
-    type Variant = Self;
-
-    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant)>
-    where
-        V: DeserializeSeed<'de>,
-    {
-        // The `deserialize_enum` method parsed a `{` character so we are
-        // currently inside of a map. The seed will be deserializing itself from
-        // the key of the map.
-        let val = seed.deserialize(&mut *self.de)?;
-        // Parse the colon separating map key from value.
-        if self.de.next_char()? == ':' {
-            Ok((val, self))
-        } else {
-            Err(Error::ExpectedMapColon)
+impl<'a, 'de> StructValues<'a, 'de> {
+    fn new(de: &'a mut Deserializer<'de>, fields: &'static [&'static str]) -> Self {
+        StructValues {
+            de,
+            fields,
+            idx: 0,
         }
     }
 }
-*/
-
-// `VariantAccess` is provided to the `Visitor` to give it the ability to see
-// the content of the single variant that it decided to deserialize.
-/*
-impl<'de, 'a> VariantAccess<'de> for Enum<'a, 'de> {
-    type Error = Error;
-
-    // If the `Visitor` expected this variant to be a unit variant, the input
-    // should have been the plain string case handled in `deserialize_enum`.
-    fn unit_variant(self) -> Result<()> {
-        Err(Error::ExpectedString)
-    }
-
-    // Newtype variants are represented in JSON as `{ NAME: VALUE }` so
-    // deserialize the value here.
-    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
-    where
-        T: DeserializeSeed<'de>,
-    {
-        seed.deserialize(self.de)
-    }
-
-    // Tuple variants are represented in JSON as `{ NAME: [DATA...] }` so
-    // deserialize the sequence of data here.
-    fn tuple_variant<V>(self, _len: usize, visitor: V) -> Result<V::Value>
-    where
-        V: Visitor<'de>,
-    {
-        de::Deserializer::deserialize_seq(self.de, visitor)
-    }
-
-    // Struct variants are represented in JSON as `{ NAME: { K: V, ... } }` so
-    // deserialize the inner map here.
-    fn struct_variant<V>(
-        self,
-        _fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value>
-    where
-        V: Visitor<'de>,
-    {
-        de::Deserializer::deserialize_map(self.de, visitor)
-    }
-}
-*/
-
 
 struct SeqValues<'a, 'de: 'a> {
-    de: &'a mut Deserializer<'de>
+    de: &'a mut Deserializer<'de>,
+    len: Option<usize>,
+    idx: usize,
 }
 impl<'a, 'de> SeqValues<'a, 'de> {
     fn new(de: &'a mut Deserializer<'de>) -> Self {
         SeqValues {
             de,
+            len: None,
+            idx: 0,
+        }
+    }
+    fn new_with_length(de: &'a mut Deserializer<'de>, len: usize) -> Self {
+        SeqValues {
+            de,
+            len: Some(len),
+            idx: 0,
         }
     }
 }
@@ -240,6 +155,36 @@ impl<'de, 'a> SeqAccess<'de> for SeqValues<'a, 'de> {
     where
         T: DeserializeSeed<'de>,
     {
+        if self.len == None {
+            let size = (&mut *self.de).parse_unsigned()?;
+            self.len = Some(size);
+        }
+        // SAFETY: is checked above
+        if self.len.unwrap() == self.idx {
+            return Ok(None);
+        }
+        self.idx += 1;
+        seed.deserialize(&mut *self.de).map(Some)
+    }
+}
+
+// `SeqAccess` is provided to the `Visitor` to give it the ability to iterate
+// through elements of the sequence.
+impl<'de, 'a> SeqAccess<'de> for StructValues<'a, 'de> {
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        if self.idx == self.fields.len() && self.de.input.is_empty(){
+            return Ok(None);
+        }
+        let field = (&mut *self.de).parse_str()?;
+        if field != self.fields[self.idx] {
+            return Err(Error::FieldNotFound(self.fields[self.idx]));
+        }
+        self.idx += 1;
         seed.deserialize(&mut *self.de).map(Some)
     }
 }
@@ -269,7 +214,6 @@ impl<'de, 'a> MapAccess<'de> for SeqValues<'a, 'de> {
     }
 }
 
-
 impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     type Error = Error;
 
@@ -280,18 +224,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        /*
-        match self.peek_char()? {
-            'n' => self.deserialize_unit(visitor),
-            't' | 'f' => self.deserialize_bool(visitor),
-            '"' => self.deserialize_str(visitor),
-            '0'..='9' => self.deserialize_u64(visitor),
-            '-' => self.deserialize_i64(visitor),
-            '[' => self.deserialize_seq(visitor),
-            '{' => self.deserialize_map(visitor),
-            _ => Err(Error::Syntax),
-        }
-        */
         todo!("any")
     }
 
@@ -509,11 +441,11 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     // As indicated by the length parameter, the `Deserialize` implementation
     // for a tuple in the Serde data model is required to know the length of the
     // tuple before even looking at the input data.
-    fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value>
+    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        self.deserialize_seq(visitor)
+        visitor.visit_seq(SeqValues::new_with_length(self, len))
     }
 
     // Tuple structs look just like sequences in JSON.
@@ -554,7 +486,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        self.deserialize_map(visitor)
+        visitor.visit_seq(StructValues::new(self, fields))
     }
 
     fn deserialize_enum<V>(
@@ -566,7 +498,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        todo!("enum")
+        visitor.visit_enum(self.parse_str()?.into_deserializer())
     }
 
     // An identifier in Serde is the type that identifies a field of a struct or
@@ -599,11 +531,22 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     }
 }
 
+#[cfg(feature = "alloc")]
+#[test]
+fn test_vec() {
+    extern crate alloc;
+    use alloc::{vec, vec::Vec};
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x02\0\0\02\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
+    let expected: Vec<&str> = vec!["lang", "eng"];
+    assert_eq!(expected, from_bytes::<Vec<&str>>(data.as_bytes()).unwrap());
+}
+
+#[cfg(feature = "alloc")]
 #[test]
 fn test_map() {
     extern crate alloc;
     use alloc::collections::BTreeMap;
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
     let mut expected: BTreeMap<&str, &str> = BTreeMap::new();
     expected.insert("lang", "eng");
     assert_eq!(expected, from_bytes::<BTreeMap<&str, &str>>(data.as_bytes()).unwrap());
@@ -618,21 +561,20 @@ pub enum Gender {
     Unknown
 }
 
+#[cfg(feature = "alloc")]
 #[test]
 fn test_struct() {
 #[derive(Deserialize, Debug, PartialEq)]
     struct HeaderParts {
-        byteswap: bool,
         language: String,
         country: String,
         variant: String,
         age: u32,
         gender: Gender,
     }
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x02\0\0\0\0\0\x09\0\0\0language\0\x04\0\0\0eng\0\x08\0\0\0country\0\x04\0\0\0USA\0\x08\0\0\0variant\0\x05\0\0\0none\0\x04\0\0\0age\0\x03\0\0\030\0\x07\0\0\0gender\0\x08\0\0\0unknown\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x09\0\0\0language\0\x04\0\0\0eng\0\x08\0\0\0country\0\x04\0\0\0USA\0\x08\0\0\0variant\0\x05\0\0\0none\0\x04\0\0\0age\0\x03\0\0\030\0\x07\0\0\0gender\0\x08\0\0\0unknown\0";
     let expected = HeaderParts {
-        byteswap: false,
-        language: "English".to_string(),
+        language: "eng".to_string(),
         country: "USA".to_string(),
         variant: "none".to_string(),
         age: 30,
@@ -643,57 +585,57 @@ fn test_struct() {
 
 #[test]
 fn test_tuple() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
-    let expected = (false, "lang", "eng");
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x01\0\0\0\x01\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
+    let expected = (true, "lang", "eng");
     assert_eq!(expected, from_bytes::<(bool, &str, &str)>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_bool() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x09\0";
-    let data2 = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x00\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x01\0\0\0\x09\0";
+    let data2 = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x01\0\0\0\x00\0";
     assert_eq!(true, from_bytes(data.as_bytes()).unwrap());
     assert_eq!(false, from_bytes(data2.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_str() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x09\0\0\0language\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x09\0\0\0language\0";
     let expected: &str = "language";
     assert_eq!(expected, from_bytes::<&str>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u8() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x04\0\0\0255\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x04\0\0\0255\0";
     let expected: u8 = 255;
     assert_eq!(expected, from_bytes::<u8>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u16() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x06\0\0\065535\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x06\0\0\065535\0";
     let expected = u16::MAX;
     assert_eq!(expected, from_bytes::<u16>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u32() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x0B\0\0\04294967295\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x0B\0\0\04294967295\0";
     let expected = u32::MAX;
     assert_eq!(expected, from_bytes::<u32>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u64() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x15\0\0\018446744073709551615\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x15\0\0\018446744073709551615\0";
     let expected = u64::MAX;
     assert_eq!(expected, from_bytes::<u64>(data.as_bytes()).unwrap());
 }
 
 #[test]
 fn test_u128() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x28\0\0\0340282366920938463463374607431768211455\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\0\0\x28\0\0\0340282366920938463463374607431768211455\0";
     let expected = u128::MAX;
     assert_eq!(expected, from_bytes::<u128>(data.as_bytes()).unwrap());
 }
