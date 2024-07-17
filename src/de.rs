@@ -125,6 +125,7 @@ impl<'a, 'de> StructValues<'a, 'de> {
     }
 }
 
+// NOTE: array values do not work like this, they are loaded in one chunk
 struct SeqValues<'a, 'de: 'a> {
     de: &'a mut Deserializer<'de>,
     len: Option<usize>,
