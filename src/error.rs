@@ -15,6 +15,7 @@ pub enum Error {
     WrongLength(usize),
     FieldNotFound(&'static str),
     TrailingBytes,
+    Message(String),
 }
 impl From<Utf8Error> for Error {
     fn from(utf8e: Utf8Error) -> Error {
@@ -33,8 +34,8 @@ impl Display for Error {
 }
 impl error::Error for Error {}
 impl serde::de::Error for Error {
-    fn custom<T>(msg: T) -> Self {
-        todo!()
+    fn custom<T: Display>(msg: T) -> Self {
+        Error::Message(msg.to_string())
     }
 }
 
