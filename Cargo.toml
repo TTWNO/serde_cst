@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 chrono = { version = "0.4.38", default-features = false, features = ["serde"] }
 serde = { version = "1.0.204", default-features = false, features = ["derive"] }
-serde_with = { version = "3.9.0", default-features = false }
+serde_with = { version = "3.9.0", default-features = false, features = ["macros"] }
 
 [features]
 default = []
