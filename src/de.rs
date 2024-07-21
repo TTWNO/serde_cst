@@ -7,7 +7,7 @@ use serde::Deserialize;
 use crate::error::{Error, Result};
 use crate::Gender;
 #[cfg(feature = "alloc")]
-use crate::HeaderParts;
+use crate::Header;
 
 pub struct Deserializer<'de> {
     // This string starts with the input data and characters are truncated off
@@ -80,6 +80,8 @@ impl<'de> Deserializer<'de> {
     fn parse_str(&mut self) -> Result<&'de str> {
         self.validate_header()?;
         let size = self.get_size_of_next()?;
+        #[cfg(feature = "debug")]
+        println!("BUFs: {:x?}", &self.input[..size]);
         let bytes = &self.input.get(0..size).ok_or(Error::Eof)?;
         if bytes[size - 1] != 0 {
             return Err(Error::WrongLength(size));
@@ -87,6 +89,15 @@ impl<'de> Deserializer<'de> {
         let s = core::str::from_utf8(&bytes[..size - 1])?;
         self.input = &self.input[size..];
         Ok(s)
+    }
+    fn read_bytes<const N: usize, const M: usize>(&mut self) -> Result<[u8; M]> {
+        assert!(N >= M, "N must be greater than or equal to M");
+        #[cfg(feature = "debug")]
+        println!("BUF: {:x?}", &self.input[..N]);
+        let n: &[u8; N] = self.input.get(..N).ok_or(Error::Eof)?.try_into().unwrap();
+        let m: [u8; M] = n[..M].try_into().unwrap();
+        self.input = &self.input[N..];
+        Ok(m)
     }
     fn parse_digits(&mut self) -> Result<Vec<u8>> {
         let digit_chars: [u8; 10] = [b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9'];
@@ -98,22 +109,6 @@ impl<'de> Deserializer<'de> {
             .collect();
         self.input = &self.input[digits.len()..];
         Ok(digits)
-    }
-    fn parse_unsigned<T>(&mut self) -> Result<T>
-    where
-        T: AddAssign<T> + MulAssign<T> + From<u8> + FromStr,
-        Error: From<<T as FromStr>::Err>,
-    {
-        let ascii = self.parse_str()?;
-        Ok(T::from_str(ascii)?)
-    }
-    fn parse_signed<T>(&mut self) -> Result<T>
-    where
-        T: AddAssign<T> + MulAssign<T> + From<u8> + FromStr,
-        Error: From<<T as FromStr>::Err>,
-    {
-        let ascii = self.parse_str()?;
-        Ok(T::from_str(ascii)?)
     }
 }
 
@@ -179,7 +174,7 @@ impl<'de, 'a> SeqAccess<'de> for SeqValues<'a, 'de> {
         T: DeserializeSeed<'de>,
     {
         if self.len == None {
-            let size = (&mut *self.de).parse_unsigned()?;
+            let size = (&mut *self.de).get_size_of_next()?;
             self.len = Some(size);
         }
         // SAFETY: is checked above
@@ -203,6 +198,12 @@ impl<'de, 'a> SeqAccess<'de> for StructValues<'a, 'de> {
         if self.idx == self.fields.len() && self.de.input.is_empty() {
             return Ok(None);
         }
+        /*
+        if self.fields[self.idx] == "$value" {
+            self.idx += 1;
+            return seed.deserialize(&mut *self.de).map(Some);
+        }
+        */
         let field = (&mut *self.de).parse_str()?;
         if field != self.fields[self.idx] {
             return Err(Error::FieldNotFound(self.fields[self.idx]));
@@ -221,6 +222,9 @@ impl<'de, 'a> MapAccess<'de> for SeqValues<'a, 'de> {
     where
         K: DeserializeSeed<'de>,
     {
+        #[cfg(feature = "debug")]
+        println!("BUFks: {:x?}", &self.de.input[..8]);
+        println!("TYPE: {}", std::any::type_name::<K>());
         if self.de.input.is_empty() {
             return Ok(None);
         }
@@ -233,6 +237,9 @@ impl<'de, 'a> MapAccess<'de> for SeqValues<'a, 'de> {
         V: DeserializeSeed<'de>,
     {
         // Deserialize a map value.
+        #[cfg(feature = "debug")]
+        println!("BUFvs: {:x?}", &self.de.input[..8]);
+        println!("TYPE: {}", std::any::type_name::<V>());
         seed.deserialize(&mut *self.de)
     }
 }
@@ -247,6 +254,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        #[cfg(feature = "debug")]
+        println!("BUFa: {:x?}", &self.input[..8]);
         todo!("any")
     }
 
@@ -293,7 +302,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_i32(self.parse_signed()?)
+        let val = i32::from_le_bytes(self.read_bytes::<4, 4>()?);
+        visitor.visit_i32(val)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
@@ -308,43 +318,47 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u8(self.parse_unsigned()?)
+        let val = u8::from_le_bytes(self.read_bytes::<4, 1>()?);
+        visitor.visit_u8(val)
     }
 
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u16(self.parse_unsigned()?)
+        let val = u16::from_le_bytes(self.read_bytes::<4, 2>()?);
+        visitor.visit_u16(val)
     }
 
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u32(self.parse_unsigned()?)
+        let val = u32::from_le_bytes(self.read_bytes::<4, 4>()?);
+        visitor.visit_u32(val)
     }
 
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u64(self.parse_unsigned()?)
+        todo!("u64")
     }
 
     fn deserialize_u128<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u128(self.parse_unsigned()?)
+        todo!("u128")
     }
 
     // Float parsing is stupidly hard.
-    fn deserialize_f32<V>(self, _visitor: V) -> Result<V::Value>
+    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        todo!("f32")
+        let val = f32::from_le_bytes(self.read_bytes::<4, 4>()?);
+        visitor.visit_f32(val)
     }
 
     // Float parsing is stupidly hard.
@@ -445,6 +459,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        self.validate_header()?;
         visitor.visit_seq(SeqValues::new(self))
     }
 
@@ -465,13 +480,13 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     fn deserialize_tuple_struct<V>(
         self,
         _name: &'static str,
-        _len: usize,
+        len: usize,
         visitor: V,
     ) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        todo!("tuple struct")
+        self.deserialize_tuple(len, visitor)
     }
 
     // Much like `deserialize_seq` but calls the visitors `visit_map` method
@@ -499,6 +514,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        #[cfg(feature = "debug")]
+        println!("FLs: {:?}", fields);
         visitor.visit_seq(StructValues::new(self, fields))
     }
 
@@ -511,6 +528,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        #[cfg(feature = "debug")]
+        println!("FVs: {:?}", variants);
         visitor.visit_enum(self.parse_str()?.into_deserializer())
     }
 
@@ -540,6 +559,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        #[cfg(feature = "debug")]
+        println!("BUFia: {:x?}", &self.input[..8]);
         self.deserialize_any(visitor)
     }
 }
@@ -549,7 +570,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 fn test_vec() {
     extern crate alloc;
     use alloc::{vec, vec::Vec};
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x02\0\0\02\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
+    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x02\0\0\0\x05\0\0\0lang\0\x04\0\0\0eng\0";
     let expected: Vec<&str> = vec!["lang", "eng"];
     assert_eq!(expected, from_bytes::<Vec<&str>>(data.as_bytes()).unwrap());
 }
@@ -571,26 +592,26 @@ fn test_map() {
 #[cfg(feature = "alloc")]
 #[test]
 fn test_struct() {
+    use serde_with::{serde_as, DisplayFromStr};
+    #[serde_as]
     #[derive(Deserialize, Debug, PartialEq)]
-    struct HeaderParts {
+    struct Header {
         language: String,
         country: String,
         variant: String,
+        #[serde_as(as = "DisplayFromStr")]
         age: u32,
         gender: Gender,
     }
     let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x09\0\0\0language\0\x04\0\0\0eng\0\x08\0\0\0country\0\x04\0\0\0USA\0\x08\0\0\0variant\0\x05\0\0\0none\0\x04\0\0\0age\0\x03\0\0\030\0\x07\0\0\0gender\0\x08\0\0\0unknown\0";
-    let expected = HeaderParts {
+    let expected = Header {
         language: "eng".to_string(),
         country: "USA".to_string(),
         variant: "none".to_string(),
         age: 30,
         gender: Gender::Unknown,
     };
-    assert_eq!(
-        expected,
-        from_bytes::<HeaderParts>(data.as_bytes()).unwrap()
-    );
+    assert_eq!(expected, from_bytes::<Header>(data.as_bytes()).unwrap());
 }
 
 #[test]
@@ -619,64 +640,33 @@ fn test_str() {
     assert_eq!(expected, from_bytes::<&str>(data.as_bytes()).unwrap());
 }
 
-#[test]
-fn test_u8() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x04\0\0\0255\0";
-    let expected: u8 = 255;
-    assert_eq!(expected, from_bytes::<u8>(data.as_bytes()).unwrap());
-}
-
-#[test]
-fn test_u16() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x06\0\0\065535\0";
-    let expected = u16::MAX;
-    assert_eq!(expected, from_bytes::<u16>(data.as_bytes()).unwrap());
-}
-
-#[test]
-fn test_u32() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x0B\0\0\04294967295\0";
-    let expected = u32::MAX;
-    assert_eq!(expected, from_bytes::<u32>(data.as_bytes()).unwrap());
-}
-
-#[test]
-fn test_u64() {
-    let data = "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x15\0\0\018446744073709551615\0";
-    let expected = u64::MAX;
-    assert_eq!(expected, from_bytes::<u64>(data.as_bytes()).unwrap());
-}
-
-#[test]
-fn test_u128() {
-    let data =
-        "CMU_FLITE_CG_VOXDATA-v2.0\0\x01\0\0\0\x28\0\0\0340282366920938463463374607431768211455\0";
-    let expected = u128::MAX;
-    assert_eq!(expected, from_bytes::<u128>(data.as_bytes()).unwrap());
-}
-
 #[cfg(feature = "alloc")]
 #[test]
 fn test_file() {
+    use crate::{EndOfFeatures, Features, Language};
     use chrono::NaiveDateTime;
     let data = include_bytes!("../data/cmu_us_slt.flitevox");
-    let expected = HeaderParts {
-        language: "eng".to_string(),
-        country: "USA".to_string(),
-        variant: "none".to_string(),
-        age: 30,
-        gender: Gender::Unknown,
-        build_date: chrono::NaiveDateTime::new(
-            chrono::NaiveDate::from_ymd_opt(2017, 9, 14).unwrap(),
-            chrono::NaiveTime::from_hms_opt(23, 37, 0).unwrap(),
-        ),
-        description: "unknown".to_string(),
-        eng_shared: 0,
-        copyright: "unknown".to_string(),
-        num_dur_models: 3,
-        num_param_models: 3,
-        model_shape: 3,
-        num_f0_models: 3,
+    let expected = Header {
+        features: Features {
+            language: "eng".to_string(),
+            country: "USA".to_string(),
+            variant: "none".to_string(),
+            age: 30,
+            gender: Gender::Unknown,
+            build_date: chrono::NaiveDateTime::new(
+                chrono::NaiveDate::from_ymd_opt(2017, 9, 14).unwrap(),
+                chrono::NaiveTime::from_hms_opt(23, 37, 0).unwrap(),
+            ),
+            description: "unknown".to_string(),
+            eng_shared: 0,
+            copyright: "unknown".to_string(),
+            num_dur_models: 3,
+            num_param_models: 3,
+            model_shape: 3,
+            num_f0_models: 3,
+            end_of_features: EndOfFeatures::EndOfFeatures,
+        },
+        name: "cmu_us_slt".to_string(),
     };
-    assert_eq!(expected, from_bytes::<HeaderParts>(data).unwrap());
+    assert_eq!(expected, from_bytes::<Header>(data).unwrap());
 }
