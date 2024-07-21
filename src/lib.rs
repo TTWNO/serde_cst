@@ -17,5 +17,8 @@ pub mod header;
 #[cfg(feature = "alloc")]
 pub use header::*;
 
+#[cfg(feature = "alloc")]
+pub mod voice;
+
 #[cfg(feature = "std")]
 extern crate std;
