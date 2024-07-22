@@ -81,6 +81,8 @@ impl<'de> Deserializer<'de> {
         self.validate_header()?;
         let size = self.get_size_of_next()?;
         #[cfg(feature = "debug")]
+        println!("SIZE: {:?}", size);
+        #[cfg(feature = "debug")]
         println!("BUFs: {:x?}", &self.input[..size]);
         let bytes = &self.input.get(0..size).ok_or(Error::Eof)?;
         if bytes[size - 1] != 0 {
@@ -142,6 +144,7 @@ impl<'a, 'de> StructValues<'a, 'de> {
     }
 }
 
+
 // NOTE: array values do not work like this, they are loaded in one chunk
 struct SeqValues<'a, 'de: 'a> {
     de: &'a mut Deserializer<'de>,
@@ -173,43 +176,48 @@ impl<'de, 'a> SeqAccess<'de> for SeqValues<'a, 'de> {
     where
         T: DeserializeSeed<'de>,
     {
+        #[cfg(feature = "debug")]
+        println!("BUFnes: {:?}", &self.de.input[..8]);
+        #[cfg(feature = "debug")]
+        println!("size-pre: {:?}", self.len);
         if self.len == None {
             let size = (&mut *self.de).get_size_of_next()?;
             self.len = Some(size);
         }
+        #[cfg(feature = "debug")]
+        println!("size-post: {:?}", self.len);
         // SAFETY: is checked above
         if self.len.unwrap() == self.idx {
             return Ok(None);
         }
         self.idx += 1;
+        #[cfg(feature = "debug")]
+        println!("idx: {}", self.idx);
         seed.deserialize(&mut *self.de).map(Some)
     }
 }
 
 // `SeqAccess` is provided to the `Visitor` to give it the ability to iterate
 // through elements of the sequence.
-impl<'de, 'a> SeqAccess<'de> for StructValues<'a, 'de> {
+impl<'de, 'a> MapAccess<'de> for StructValues<'a, 'de> {
     type Error = Error;
 
-    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
     where
-        T: DeserializeSeed<'de>,
+        K: DeserializeSeed<'de>,
     {
-        if self.idx == self.fields.len() && self.de.input.is_empty() {
+        if self.fields.len() == self.idx {
             return Ok(None);
         }
-        /*
-        if self.fields[self.idx] == "$value" {
-            self.idx += 1;
-            return seed.deserialize(&mut *self.de).map(Some);
-        }
-        */
-        let field = (&mut *self.de).parse_str()?;
-        if field != self.fields[self.idx] {
-            return Err(Error::FieldNotFound(self.fields[self.idx]));
-        }
+        let field = seed.deserialize(&mut *self.de)?;
         self.idx += 1;
-        seed.deserialize(&mut *self.de).map(Some)
+        Ok(Some(field))
+    }
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        seed.deserialize(&mut *self.de)
     }
 }
 
@@ -224,6 +232,7 @@ impl<'de, 'a> MapAccess<'de> for SeqValues<'a, 'de> {
     {
         #[cfg(feature = "debug")]
         println!("BUFks: {:x?}", &self.de.input[..8]);
+        #[cfg(feature = "debug")]
         println!("TYPE: {}", std::any::type_name::<K>());
         if self.de.input.is_empty() {
             return Ok(None);
@@ -239,6 +248,7 @@ impl<'de, 'a> MapAccess<'de> for SeqValues<'a, 'de> {
         // Deserialize a map value.
         #[cfg(feature = "debug")]
         println!("BUFvs: {:x?}", &self.de.input[..8]);
+        #[cfg(feature = "debug")]
         println!("TYPE: {}", std::any::type_name::<V>());
         seed.deserialize(&mut *self.de)
     }
@@ -431,7 +441,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        todo!("unit")
+        visitor.visit_unit()
     }
 
     // Unit struct means a named value containing no data.
@@ -460,6 +470,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: Visitor<'de>,
     {
         self.validate_header()?;
+        #[cfg(feature = "debug")]
+        println!("SeqBUF: {:?}", &self.input[..8]);
         visitor.visit_seq(SeqValues::new(self))
     }
 
@@ -473,6 +485,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        #[cfg(feature = "debug")]
+        println!("TUPLE SIZE: {}", len);
         visitor.visit_seq(SeqValues::new_with_length(self, len))
     }
 
@@ -486,6 +500,8 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        #[cfg(feature = "debug")]
+        println!("TUPLE STRUCT SIZE: {}", len);
         self.deserialize_tuple(len, visitor)
     }
 
@@ -507,7 +523,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     // the fields cannot be known ahead of chrono is probably a map.
     fn deserialize_struct<V>(
         self,
-        _name: &'static str,
+        name: &'static str,
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value>
@@ -515,13 +531,13 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: Visitor<'de>,
     {
         #[cfg(feature = "debug")]
-        println!("FLs: {:?}", fields);
-        visitor.visit_seq(StructValues::new(self, fields))
+        println!("FLs: {:?} ({})", fields, name);
+        visitor.visit_map(StructValues::new(self, fields))
     }
 
     fn deserialize_enum<V>(
         self,
-        _name: &'static str,
+        name: &'static str,
         variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value>
