@@ -25,6 +25,7 @@ pub struct Features {
     pub variant: String,
     #[serde_as(as = "DisplayFromStr")]
     pub age: u32,
+    #[serde_as(as = "DisplayFromStr")]
     pub gender: Gender,
     #[serde(with = "crate::date")]
     pub build_date: chrono::NaiveDateTime,
@@ -69,3 +70,4 @@ impl From<_Header> for Header {
         }
     }
 }
+
