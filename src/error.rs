@@ -13,7 +13,7 @@ pub enum Error {
     NotUtf8(Utf8Error),
     ParseInt(ParseIntError),
     WrongLength(usize),
-    FieldNotFound(&'static str),
+    UnexpectedField(&'static str),
     TrailingBytes,
     Message(String),
 }
