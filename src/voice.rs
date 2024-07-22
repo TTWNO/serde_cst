@@ -1,49 +1,214 @@
-use crate::Header;
-use serde::{Deserialize, Serialize};
+use crate::{error::Error, Header};
+use serde::{Deserialize, Deserializer, de::DeserializeSeed, de::value::SeqDeserializer, Serialize, de::Visitor, de::SeqAccess, de};
+use serde_dis::{DeserializeWithDiscriminant};
+use core::{fmt, marker::PhantomData};
+
+#[derive(Debug, PartialEq)]
+#[repr(u8)]
+pub enum CstVal {
+    // no idea what this means
+    Cons(i32) = 0,
+    Int(String) = 1,
+    Float(f32) = 3,
+    Str(String) = 5,
+    FirstFree(i32) = 7,
+    Max(i32) = 54
+}
+struct CstValVisitor;
+impl<'de> Visitor<'de> for CstValVisitor {
+    type Value = CstVal;
+    fn expecting(self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.write_str("A CstVal consisting of a singe byte, whith determintes the type that follows")
+    }
+    fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error> 
+    where A: SeqAccess<'de> {
+        let discrim = seq.next_element()?;
+        let b = match discrim {
+            0 | 1 | 3 | 5 | 7 | 54 => 
+            _ => panic!(),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for CstVal {
+    in deserialize<D>(deser: D) -> Result<Self, D::Error> {
+        deser.deserialize_seq(CtsVisitor)
+    }
+}
 
 #[derive(Deserialize, Debug, PartialEq)]
-#[serde(from = "_Body", into = "_Body")]
+pub struct TreeNode (
+    u8, // feat
+    u8, // op
+    u16, // no of tree
+    CstVal,
+);
+
+#[derive(Deserialize, Debug, PartialEq)]
+pub struct TreeFeatures(Vec<String>);
+
+#[derive(Deserialize, Debug, PartialEq)]
+pub struct Tree (
+    TreeNode,
+    TreeFeatures,
+);
+
+#[derive(Deserialize, Debug, PartialEq)]
+pub struct F0Tree(Vec<Tree>);
+
+struct FixedSeqValuesVisitor<'de, D> {
+    len: usize,
+    idx: usize,
+    _marker: &'de core::marker::PhantomData<D>,
+}
+impl<'de, D> FixedSeqValuesVisitor<'de, D> {
+    fn new(len: usize) -> Self {
+        FixedSeqValuesVisitor {
+            len,
+            idx: 0,
+            _marker: &core::marker::PhantomData,
+        }
+    }
+}
+impl<'de, D> Visitor<'de> for FixedSeqValuesVisitor<'de, D>
+where D: Deserialize<'de> {
+    type Value = Vec<D>;
+    fn expecting(&self, fmt: &mut core::fmt::Formatter) -> core::fmt::Result {
+        fmt.write_fmt(format_args!("A fixed vector of length {}", self.len))
+    }
+    fn visit_seq<A>(self, mut seq: A) -> core::result::Result<Self::Value, A::Error>
+    where A: SeqAccess<'de> {
+        let mut vec = Vec::with_capacity(self.len);
+        for i in 0..self.len {
+            let val = seq.next_element()?
+                .ok_or(de::Error::invalid_length(i, &self))?;
+            vec.push(val);
+        }
+        Ok(vec)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct TreeDb {
+    header: Header,
+    body: Body,
+}
+struct TreeDbVisitor;
+impl<'de> Visitor<'de> for TreeDbVisitor {
+    type Value = TreeDb;
+    fn expecting(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.write_str("A tree datebase which begins with a header and ends with a body")
+    }
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error> 
+    where A: SeqAccess<'de> {
+        let header = seq.next_element()?
+                .ok_or(de::Error::invalid_length(0, &self))?;
+        let body_deserial = BodyDeserializer { header: &header };
+        let body = seq.next_element_seed(body_deserial)?
+                .ok_or(de::Error::invalid_length(1, &self))?;
+        Ok(TreeDb { header, body })
+    }
+}
+impl<'de> Deserialize<'de> for TreeDb {
+    fn deserialize<D>(deserializer: D) -> Result<TreeDb, D::Error> 
+    where D: Deserializer<'de> {
+        deserializer.deserialize_tuple(2, TreeDbVisitor)
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct Body {
     pub db_types: Vec<String>,
     pub num_types: i32,
     pub sample_rate: i32,
     pub f0_mean: f32,
     pub f0_stddev: f32,
+    pub f0_trees: Vec<F0Tree>,
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
-pub struct _Body(pub Vec<String>, pub i32, pub i32, pub f32, pub f32);
-
-impl From<_Body> for Body {
-    fn from(body: _Body) -> Body {
-        Body {
-            db_types: body.0,
-            num_types: body.1,
-            sample_rate: body.2,
-            f0_mean: body.3,
-            f0_stddev: body.4,
-        }
+struct FixedLengthSeq<T> {
+    pub len: usize,
+    pub _marker: PhantomData<T>,
+}
+impl<T> FixedLengthSeq<T> {
+    fn from_len(len: usize) -> Self {
+        FixedLengthSeq { len, _marker: PhantomData }
+    }
+}
+impl<'de, T> DeserializeSeed<'de> for FixedLengthSeq<T>
+where T: Deserialize<'de> + 'de, {
+    type Value = Vec<T>;
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error> 
+    where D: Deserializer<'de> {
+        deserializer.deserialize_seq(FixedSeqValuesVisitor::new(self.len))
     }
 }
 
-impl From<Body> for _Body {
-    fn from(body: Body) -> _Body {
-        _Body(
-            body.db_types,
-            body.num_types,
-            body.sample_rate,
-            body.f0_mean,
-            body.f0_stddev,
-        )
+struct BodyVisitor<'a> {
+    header: &'a Header,
+}
+impl<'a> BodyVisitor<'a> {
+    fn new(header: &'a Header) -> Self {
+        BodyVisitor { header } 
     }
 }
+impl<'a, 'de> Visitor<'de> for BodyVisitor<'a> {
+    type Value = Body;
+    fn expecting(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.write_str("A body of a Festivel CG (cluster gen) voice")
+    }
+    fn visit_seq<V>(self, mut seq: V) -> Result<Body, V::Error> 
+    where V: SeqAccess<'de> {
+        Ok(Body {
+            db_types: seq.next_element()?
+                .ok_or(de::Error::invalid_length(0, &self))?,
+            num_types: seq.next_element()?
+                .ok_or(de::Error::invalid_length(1, &self))?,
+            sample_rate: seq.next_element()?
+                .ok_or(de::Error::invalid_length(2, &self))?,
+            f0_mean: seq.next_element()?
+                .ok_or(de::Error::invalid_length(3, &self))?,
+            f0_stddev: seq.next_element()?
+                .ok_or(de::Error::invalid_length(4, &self))?,
+            f0_trees: seq.next_element_seed(FixedLengthSeq::from_len(self.header.features.num_f0_models.try_into().unwrap()))?
+                .ok_or(de::Error::invalid_length(5, &self))?,
+        })
+    }
+}
+
+struct BodyDeserializer<'a> {
+    header: &'a Header,
+}
+
+impl<'de, 'a> DeserializeSeed<'de> for BodyDeserializer<'a> {
+    type Value = Body;
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error> 
+    where D: Deserializer<'de> {
+        deserializer.deserialize_tuple(6, BodyVisitor::new(self.header))
+    }
+}
+
+/*
+struct BodyDeserializer;
+impl<'de> Visitor<'de> for BodyVisitor {
+    type Error = Error;
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("A body attached to a header.");
+    }
+    fn visit_seq<V>() -> Result<Self::Value, V::Error> 
+    where V: SeqAccess<'de> {
+        let header = seq.next_element()?;
+        let body = seq.next_element_seed(BodySeed { header })?; 
+        Ok(body)
+    }
+}
+*/
 
 #[test]
 fn test_cluster_voice() {
     use crate::{de::from_bytes, EndOfFeatures, Features, Gender, Language};
     use chrono::NaiveDateTime;
     let data = include_bytes!("../data/cmu_us_slt.flitevox");
-    let expected_head = Header {
+    let header = Header {
         features: Features {
             language: "eng".to_string(),
             country: "USA".to_string(),
@@ -65,10 +230,8 @@ fn test_cluster_voice() {
         },
         name: "cmu_us_slt".to_string(),
     };
-    let expected = (
-        expected_head,
-        _Body(
-            vec![
+    let body = Body {
+            db_types: vec![
                 "aa_1".to_string(),
                 "aa_2".to_string(),
                 "aa_3".to_string(),
@@ -194,11 +357,14 @@ fn test_cluster_voice() {
                 "zh_2".to_string(),
                 "zh_3".to_string(),
             ],
-            0x7c,
-            0x3e80,
-            f32::from_le_bytes([0, 0, 0x2c, 0x43]),
-            f32::from_le_bytes([0, 0, 0xd8, 0x41]),
-        ),
-    );
-    assert_eq!(expected, from_bytes::<(Header, _Body)>(data).unwrap());
+            num_types: 0x7c,
+            sample_rate: 0x3e80,
+            f0_mean: f32::from_le_bytes([0, 0, 0x2c, 0x43]),
+            f0_stddev: f32::from_le_bytes([0, 0, 0xd8, 0x41]),
+            f0_trees: vec![]
+        };
+    let expected = TreeDb {
+        header, body
+    };
+    assert_eq!(expected, from_bytes::<TreeDb>(data).unwrap());
 }
