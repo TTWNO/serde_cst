@@ -8,30 +8,61 @@ use core::{fmt, marker::PhantomData};
 pub enum CstVal {
     // no idea what this means
     Cons(i32) = 0,
-    Int(String) = 1,
+    Int(i32) = 1,
     Float(f32) = 3,
     Str(String) = 5,
     FirstFree(i32) = 7,
-    Max(i32) = 54
+    Other(i32) = 54
 }
 struct CstValVisitor;
 impl<'de> Visitor<'de> for CstValVisitor {
     type Value = CstVal;
-    fn expecting(self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.write_str("A CstVal consisting of a singe byte, whith determintes the type that follows")
+    fn expecting(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.write_str("A CstVal consisting of a singe byte, which determintes the type that follows")
     }
-    fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error> 
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error> 
     where A: SeqAccess<'de> {
-        let discrim = seq.next_element()?;
-        let b = match discrim {
-            0 | 1 | 3 | 5 | 7 | 54 => 
-            _ => panic!(),
+        let discrim = seq.next_element()?
+                    .ok_or(de::Error::invalid_length(0, &self))?;
+        println!("CstValue discriminant: {}", discrim);
+        match discrim {
+            0 => {
+                let v = seq.next_element()?
+                    .ok_or(de::Error::invalid_length(1, &self))?;
+                Ok(CstVal::Cons(v))
+            },
+            1 => {
+                let v = seq.next_element()?
+                    .ok_or(de::Error::invalid_length(1, &self))?;
+                Ok(CstVal::Int(v))
+            },
+            3 => {
+                let v = seq.next_element()?
+                    .ok_or(de::Error::invalid_length(1, &self))?;
+                Ok(CstVal::Float(v))
+            },
+            5 => {
+                let v = seq.next_element()?
+                    .ok_or(de::Error::invalid_length(1, &self))?;
+                Ok(CstVal::Str(v))
+            },
+            7 => {
+                let v = seq.next_element()?
+                    .ok_or(de::Error::invalid_length(1, &self))?;
+                Ok(CstVal::FirstFree(v))
+            },
+            _ => {
+                let v = seq.next_element()?
+                    .ok_or(de::Error::invalid_length(1, &self))?;
+                Ok(CstVal::Other(v))
+            },
         }
     }
 }
 impl<'de> Deserialize<'de> for CstVal {
-    in deserialize<D>(deser: D) -> Result<Self, D::Error> {
-        deser.deserialize_seq(CtsVisitor)
+    fn deserialize<D>(deser: D) -> Result<Self, D::Error> 
+    where D: Deserializer<'de> {
+        deser.deserialize_seq(CstValVisitor)
     }
 }
 
@@ -40,7 +71,7 @@ pub struct TreeNode (
     u8, // feat
     u8, // op
     u16, // no of tree
-    CstVal,
+    CstVal, // value expession
 );
 
 #[derive(Deserialize, Debug, PartialEq)]
